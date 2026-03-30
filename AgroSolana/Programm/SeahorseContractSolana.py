@@ -1,76 +1,63 @@
 from seahorse.prelude import *
 
-declare_id('AgroShare1111111111111111111111111111111')
+# 1. Уникальный адрес программы
+declare_id('Hgsg56L4yXEYharB4iE9CYmUzkHfzp8ogtHNdHhLwNG3')
 
-# Состояние актива (трактор, комбайн и т.д.)
+# 2. ОПРЕДЕЛЕНИЕ СТРУКТУР
 class Asset(Account):
     admin: Pubkey
-    description: str[64]
+    description: Array[u8, 64]   # ИСПРАВЛЕНО: str[64] → Array[u8, 64]
     total_shares: u64
     price_per_share: u64
     sold_shares: u64
-    vault_balance: u64  # Накопленные дивиденды для выплаты
+    vault_balance: u64
 
-# Состояние инвестора
 class ShareHolder(Account):
     owner: Pubkey
     asset: Pubkey
     shares_count: u64
-    unclaimed_dividends: u64 # Причитающаяся прибыль
+    unclaimed_dividends: u64
 
+# 3. ИНСТРУКЦИИ
 @instruction
-def init_asset(admin: Signer, asset: Empty[Asset], desc: str[64], shares: u64, price: u64):
-    # Создание записи об активе
-    new_asset = asset.init(payer = admin, seeds = ['v1', desc])
-    new_asset.admin = admin.key()
-    new_asset.description = desc
-    new_asset.total_shares = shares
+def init_asset(
+    admin: Signer,
+    asset: Empty[Asset],
+    shares: u64,
+    price: u64,
+    asset_id: u64
+):
+    new_asset = asset.init(payer = admin, seeds = ['asset', asset_id])
+    new_asset.admin           = admin.key()
+    new_asset.total_shares    = shares
     new_asset.price_per_share = price
-    new_asset.sold_shares = 0
-    new_asset.vault_balance = 0
+    new_asset.sold_shares     = 0
+    new_asset.vault_balance   = 0
 
 @instruction
-def buy_shares(user: Signer, asset: Asset, holder: Empty[ShareHolder], amount: u64):
-    # 1. Проверки
-    assert asset.sold_shares + amount <= asset.total_shares, 'Превышен лимит долей'
-    
-    # 2. Расчет стоимости
+def buy_shares(
+    user: Signer,
+    asset: Asset,
+    holder: Empty[ShareHolder],
+    admin_account: UncheckedAccount,
+    amount: u64
+):
+    # Проверка наличия долей
+    assert asset.sold_shares + amount <= asset.total_shares, 'No shares left'
+
+    # Проверка, что SOL уйдут именно на кошелёк админа этого актива
+    assert admin_account.key() == asset.admin, 'Wrong admin account'
+
+    # Расчёт и перевод SOL
     total_cost = amount * asset.price_per_share
-    
-    # 3. РЕАЛЬНЫЙ ПЕРЕВОД ДЕНЕГ (SOL)
-    # Переводим SOL от покупателя на аккаунт администратора актива
-    user.transfer_lamports(asset.admin, total_cost)
-    
-    # 4. Регистрация владельца
-    new_holder = holder.init(payer = user, seeds = [user, asset.key()])
-    new_holder.owner = user.key()
-    new_holder.asset = asset.key()
-    new_holder.shares_count = amount
+    user.transfer_lamports(admin_account, total_cost)
+
+    # Регистрация инвестора
+    new_holder = holder.init(payer = user, seeds = ['holder', user.key(), asset.key()])
+    new_holder.owner               = user.key()
+    new_holder.asset               = asset.key()
+    new_holder.shares_count        = amount
     new_holder.unclaimed_dividends = 0
-    
-    # 5. Обновление данных актива
+
+    # Обновление данных в блокчейне
     asset.sold_shares += amount
-
-@instruction
-def add_profit(admin: Signer, asset: Asset, total_profit: u64):
-    # Функция для начисления прибыли (например, от аренды трактора)
-    # Только админ может вызвать эту функцию
-    assert admin.key() == asset.admin, 'Доступ запрещен'
-    
-    # Переводим прибыль от админа на "баланс" контракта
-    admin.transfer_lamports(asset, total_profit)
-    asset.vault_balance += total_profit
-    # В реальном коде здесь была бы логика распределения на каждого holder'а
-
-@instruction
-def claim_dividends(user: Signer, asset: Asset, holder: ShareHolder):
-    # Инвестор забирает свою часть прибыли
-    assert holder.owner == user.key(), 'Это не ваш аккаунт'
-    
-    # Пример логики: выплачиваем фиксированную часть из vault_balance
-    payout = holder.unclaimed_dividends
-    assert payout > 0, 'Нет доступных выплат'
-    
-    # Перевод SOL обратно пользователю
-    asset.transfer_lamports(user, payout)
-    holder.unclaimed_dividends = 0
